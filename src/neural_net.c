@@ -77,6 +77,25 @@ static double sigmoid_prime(double z) {
     return s * (1 - s);
 }
 
+static double relu(double z) {
+    return z > 0 ? z : 0;
+}
+
+static double relu_prime(double z) {
+    return z > 0 ? 1.0 : 0.0;
+}
+
+static void softmax(const double* z, double* out, int n) {
+    double max_z = z[0];
+    for (int i = 1; i < n; i++) if (z[i] > max_z) max_z = z[i];
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        out[i] = exp(z[i] - max_z);
+        sum += out[i];
+    }
+    for (int i = 0; i < n; i++) out[i] /= sum;
+}
+
 static void shuffle(double** a, double** b, size_t size) {
     for (size_t i = size - 1; i > 0; i--) {
         size_t j = rand() % (i + 1);
@@ -101,18 +120,17 @@ void nn_feedforward(NeuralNet* nn, const double* input, double* output) {
             for (int j = 0; j < cols; j++) {
                 z[i] += nn->weights[l - 1][i][j] * a[j];
             }
-            z[i] = sigmoid(z[i]);
         }
-
-        a = z;
 
         if (l == nn->num_layers - 1) {
+            softmax(z, output, rows);
+            a = output;
+        } else {
             for (int i = 0; i < rows; i++) {
-                output[i] = z[i];
+                z[i] = relu(z[i]);
             }
+            a = z;
         }
-
-        if (l != 1) free((void*)a);  // Free previous z
     }
 
     free(current_output);
@@ -139,116 +157,123 @@ void nn_train(NeuralNet* nn, const double** training_inputs, const double** trai
     double** labels = (double**) training_labels;
 
     for (int epoch = 0; epoch < epochs; epoch++) {
-    shuffle(inputs, labels, training_size);
+        shuffle(inputs, labels, training_size);
 
-    for (size_t start = 0; start < training_size; start += mini_batch_size) {
-    size_t end = (start + mini_batch_size < training_size) ? (start + mini_batch_size) : training_size;
-    size_t batch_size = end - start;
+        for (size_t start = 0; start < training_size; start += mini_batch_size) {
+            size_t end = (start + mini_batch_size < training_size) ? (start + mini_batch_size) : training_size;
+            size_t batch_size = end - start;
 
-    // Reset gradients
-    for (int l = 1; l < num_layers; l++) {
-        int rows = nn->sizes[l];
-        int cols = nn->sizes[l - 1];
-        vector_zero(nabla_b[l - 1], rows);
-        for (int i = 0; i < rows; i++) {
-            for (int j = 0; j < cols; j++) {
-                nabla_w[l - 1][i][j] = 0.0;
-            }
-        }
-    }
-
-    // Accumulate gradients
-    for (size_t i = start; i < end; i++) {
-        // FORWARD PASS
-        double** activations = malloc(num_layers * sizeof(double*));
-        double** zs = malloc((num_layers - 1) * sizeof(double*));
-        activations[0] = malloc(nn->sizes[0] * sizeof(double));
-        vector_copy(inputs[i], activations[0], nn->sizes[0]);
-
-        for (int l = 1; l < num_layers; l++) {
-            int size = nn->sizes[l];
-            int prev = nn->sizes[l - 1];
-
-            zs[l - 1] = malloc(size * sizeof(double));
-            activations[l] = malloc(size * sizeof(double));
-
-            matrix_vector_mul(nn->weights[l - 1], activations[l - 1], zs[l - 1], size, prev);
-            vector_add(zs[l - 1], nn->biases[l - 1], zs[l - 1], size);  // z = w·a + b
-            for (int j = 0; j < size; j++) {
-                activations[l][j] = sigmoid(zs[l - 1][j]);
-            }
-        }
-
-        // BACKWARD PASS
-        double* delta = malloc(nn->sizes[num_layers - 1] * sizeof(double));
-        int out_size = nn->sizes[num_layers - 1];
-        for (int j = 0; j < out_size; j++) {
-            double a = activations[num_layers - 1][j];
-            delta[j] = (a - training_labels[i][j]) * sigmoid_prime(zs[num_layers - 2][j]);
-        }
-
-        vector_add(nabla_b[num_layers - 2], delta, nabla_b[num_layers - 2], out_size);
-        for (int j = 0; j < out_size; j++) {
-            for (int k = 0; k < nn->sizes[num_layers - 2]; k++) {
-                nabla_w[num_layers - 2][j][k] += delta[j] * activations[num_layers - 2][k];
-            }
-        }
-
-        // Backpropagate to previous layers
-        for (int l = num_layers - 2; l > 0; l--) {
-            int size = nn->sizes[l];
-            int next = nn->sizes[l + 1];
-
-            double* sp = malloc(size * sizeof(double));
-            for (int j = 0; j < size; j++) {
-                sp[j] = sigmoid_prime(zs[l - 1][j]);
-            }
-
-            double* new_delta = malloc(size * sizeof(double));
-            for (int j = 0; j < size; j++) {
-                new_delta[j] = 0.0;
-                for (int k = 0; k < next; k++) {
-                    new_delta[j] += nn->weights[l][k][j] * delta[k];
-                }
-                new_delta[j] *= sp[j];
-                nabla_b[l - 1][j] += new_delta[j];
-                for (int k = 0; k < nn->sizes[l - 1]; k++) {
-                    nabla_w[l - 1][j][k] += new_delta[j] * activations[l - 1][k];
+            // Reset gradients
+            for (int l = 1; l < num_layers; l++) {
+                int rows = nn->sizes[l];
+                int cols = nn->sizes[l - 1];
+                vector_zero(nabla_b[l - 1], rows);
+                for (int i = 0; i < rows; i++) {
+                    for (int j = 0; j < cols; j++) {
+                        nabla_w[l - 1][i][j] = 0.0;
+                    }
                 }
             }
 
-            free(delta);
-            delta = new_delta;
-            free(sp);
-        }
+            // Accumulate gradients
+            for (size_t i = start; i < end; i++) {
+                // FORWARD PASS
+                double** activations = malloc(num_layers * sizeof(double*));
+                double** zs = malloc((num_layers - 1) * sizeof(double*));
+                activations[0] = malloc(nn->sizes[0] * sizeof(double));
+                vector_copy(inputs[i], activations[0], nn->sizes[0]);
 
-        free(delta);
-        for (int l = 0; l < num_layers; l++) free(activations[l]);
-        for (int l = 0; l < num_layers - 1; l++) free(zs[l]);
-        free(activations);
-        free(zs);
-    }
+                for (int l = 1; l < num_layers; l++) {
+                    int size = nn->sizes[l];
+                    int prev = nn->sizes[l - 1];
+                
+                    zs[l - 1] = malloc(size * sizeof(double));
+                    activations[l] = malloc(size * sizeof(double));
+                
+                    matrix_vector_mul(nn->weights[l - 1], activations[l - 1], zs[l - 1], size, prev);
+                    vector_add(zs[l - 1], nn->biases[l - 1], zs[l - 1], size);  // z = w·a + b
+                
+                    if (l == num_layers - 1) {
+                        // Capa de salida: softmax
+                        softmax(zs[l - 1], activations[l], size);
+                    } else {
+                        // Capas ocultas: ReLU
+                        for (int j = 0; j < size; j++) {
+                            activations[l][j] = relu(zs[l - 1][j]);
+                        }
+                    }
+                }
 
-    // Apply gradients
-    for (int l = 1; l < num_layers; l++) {
-        int rows = nn->sizes[l];
-        int cols = nn->sizes[l - 1];
-        for (int i = 0; i < rows; i++) {
-            nn->biases[l - 1][i] -= (eta / batch_size) * nabla_b[l - 1][i];
-            for (int j = 0; j < cols; j++) {
-                nn->weights[l - 1][i][j] -= (eta / batch_size) * nabla_w[l - 1][i][j];
+                // BACKWARD PASS
+                double* delta = malloc(nn->sizes[num_layers - 1] * sizeof(double));
+                int out_size = nn->sizes[num_layers - 1];
+                for (int j = 0; j < out_size; j++) {
+                    double a = activations[num_layers - 1][j];
+                    delta[j] = a - training_labels[i][j]; // softmax + cross-entropy
+                }
+
+                vector_add(nabla_b[num_layers - 2], delta, nabla_b[num_layers - 2], out_size);
+                for (int j = 0; j < out_size; j++) {
+                    for (int k = 0; k < nn->sizes[num_layers - 2]; k++) {
+                        nabla_w[num_layers - 2][j][k] += delta[j] * activations[num_layers - 2][k];
+                    }
+                }
+
+                // Backpropagate to previous layers
+                for (int l = num_layers - 2; l > 0; l--) {
+                    int size = nn->sizes[l];
+                    int next = nn->sizes[l + 1];
+
+                    double* sp = malloc(size * sizeof(double));
+                    for (int j = 0; j < size; j++) {
+                        sp[j] = relu_prime(zs[l - 1][j]);
+                    }
+
+                    double* new_delta = malloc(size * sizeof(double));
+                    for (int j = 0; j < size; j++) {
+                        new_delta[j] = 0.0;
+                        for (int k = 0; k < next; k++) {
+                            new_delta[j] += nn->weights[l][k][j] * delta[k];
+                        }
+                        new_delta[j] *= sp[j];
+                        nabla_b[l - 1][j] += new_delta[j];
+                        for (int k = 0; k < nn->sizes[l - 1]; k++) {
+                            nabla_w[l - 1][j][k] += new_delta[j] * activations[l - 1][k];
+                        }
+                    }
+
+                    free(delta);
+                    delta = new_delta;
+                    free(sp);
+                }
+
+                free(delta);
+                for (int l = 0; l < num_layers; l++) free(activations[l]);
+                for (int l = 0; l < num_layers - 1; l++) free(zs[l]);
+                free(activations);
+                free(zs);
+            }
+
+            // Apply gradients
+            for (int l = 1; l < num_layers; l++) {
+                int rows = nn->sizes[l];
+                int cols = nn->sizes[l - 1];
+                for (int i = 0; i < rows; i++) {
+                    nn->biases[l - 1][i] -= (eta / batch_size) * nabla_b[l - 1][i];
+                    for (int j = 0; j < cols; j++) {
+                        nn->weights[l - 1][i][j] -= (eta / batch_size) * nabla_w[l - 1][i][j];
+                    }
+                }
             }
         }
-    }
-    }
 
-    printf("Epoch %d complete\n", epoch + 1);
+        printf("Epoch %d complete\n", epoch + 1);
     }
 
     // Cleanup
     for (int l = 1; l < num_layers; l++) {
-    free(nabla_b[l - 1]);
-    matrix_free(nabla_w[l - 1], nn->sizes[l]);
+        free(nabla_b[l - 1]);
+        matrix_free(nabla_w[l - 1], nn->sizes[l]);
     }
     free(nabla_b);
     free(nabla_w);
